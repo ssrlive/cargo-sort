@@ -48,6 +48,7 @@ pub fn sort_toml(
         // Since this `&mut toml[&heading]` is like
         // `SomeMap.entry(key).or_insert(Item::None)` we only want to do it if we
         // know the heading is there already
+        println!("Checking for heading: {heading} with key: {key}");
         if toml.as_table().contains_key(heading) {
             if let Item::Table(table) = &mut toml[heading] {
                 if table.contains_key(key) {
@@ -68,7 +69,32 @@ pub fn sort_toml(
     let mut first_table = None;
     let mut heading_order: BTreeMap<_, Vec<Heading>> = BTreeMap::new();
     for (idx, (head, item)) in toml.as_table_mut().iter_mut().enumerate() {
-        if !matcher.heading.contains(&head.get()) {
+        println!("Processing heading: {head} at index: {idx}");
+
+        // let mut target_table: Option<(&str, &Table)> = None;
+        let mut target_table: Option<String> = None;
+        if head.get() == "target" {
+            let mut special_tables = Vec::new();
+            let mut path = vec![head.get()];
+            if let Some(table) = item.as_table() {
+                special_tables.push((vec![head.get()], table));
+                collect_special_tables(table, &mut path, &mut special_tables, &matcher);
+            }
+
+            if let Some((path, _table)) = special_tables.pop() {
+                println!("Found special table at path: {:?}", path);
+                if let Some(key) = path.last() {
+                    if matcher.heading.contains(key) {
+                        // target_table = Some((key, _table));
+                        target_table = Some(key.to_string());
+                    }
+                }
+            }
+        }
+
+        println!("target_table: {:?}", target_table);
+
+        if !matcher.heading.contains(&head.get()) && target_table.is_none() {
             if !ordering.contains(&head.to_owned()) && !ordering.is_empty() {
                 ordering.push(head.to_owned());
             }
@@ -80,12 +106,13 @@ pub fn sort_toml(
                     // The root table is always index 0 which we ignore so add 1
                     first_table = Some(idx + 1);
                 }
-                let headings = heading_order.entry((idx, head.to_string())).or_default();
+                let key = target_table.unwrap_or(head.to_string());
+                let headings = heading_order.entry((idx, key.clone())).or_default();
                 // Push a `Heading::Complete` here incase the tables are ordered
                 // [heading.segs]
                 // [heading]
                 // It will just be ignored if not the case
-                headings.push(Heading::Complete(vec![head.to_string()]));
+                headings.push(Heading::Complete(vec![key]));
 
                 gather_headings(table, headings, 1);
                 headings.sort();
@@ -103,6 +130,26 @@ pub fn sort_toml(
     }
 
     toml
+}
+
+fn collect_special_tables<'a>(
+    table: &'a Table,
+    path: &mut Vec<&'a str>,
+    result: &mut Vec<(Vec<&'a str>, &'a Table)>,
+    matcher: &Matcher,
+) {
+    for (key, item) in table.iter() {
+        if let Item::Table(inner) = item {
+            path.push(key);
+            // judge if the last level is dependencies/dev-dependencies/build-dependencies
+            if matcher.heading.contains(&key) {
+                result.push((path.clone(), inner));
+            }
+            // recursively collect special tables
+            collect_special_tables(inner, path, result, matcher);
+            path.pop();
+        }
+    }
 }
 
 fn sort_array(arr: &mut Array) {
