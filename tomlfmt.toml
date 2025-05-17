@@ -9,9 +9,11 @@ allowed_blank_lines = 2
 crlf = false
 table_order = [
     "package",
+    "workspace",
+    "lib",
     "features",
+    "bin",
     "dependencies",
     "build-dependencies",
     "dev-dependencies",
-    "workspace"
 ]

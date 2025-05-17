@@ -34,6 +34,42 @@ enum Heading {
     Complete(Vec<String>),
 }
 
+// impl PartialOrd for Heading {
+//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+//         Some(self.cmp(other))
+//     }
+// }
+
+// impl Ord for Heading {
+//     fn cmp(&self, other: &Self) -> Ordering {
+//         fn split_rev(vec: &Vec<String>) -> Vec<String> {
+//             // vec.iter()
+//             //     .map(|s| s.as_str().split('.').rev().collect::<Vec<_>>().join("."))
+//             //     .collect()
+//             let v = vec
+//                 .iter()
+//                 .map(|s| s.as_str().split('.').rev().collect::<Vec<_>>().join("."))
+//                 .collect();
+//             println!("split_rev: {v:?}");
+//             v
+//         }
+//         let (a_tag, a_segs) = match self {
+//             Heading::Complete(segs) => (1, segs),
+//             Heading::Next(segs) => (0, segs),
+//         };
+//         let (b_tag, b_segs) = match other {
+//             Heading::Complete(segs) => (1, segs),
+//             Heading::Next(segs) => (0, segs),
+//         };
+//         let ord = a_tag.cmp(&b_tag);
+//         if ord == Ordering::Equal {
+//             split_rev(a_segs).cmp(&split_rev(b_segs))
+//         } else {
+//             ord
+//         }
+//     }
+// }
+
 /// Returns a sorted toml `DocumentMut`.
 pub fn sort_toml(
     input: &str,
@@ -48,7 +84,6 @@ pub fn sort_toml(
         // Since this `&mut toml[&heading]` is like
         // `SomeMap.entry(key).or_insert(Item::None)` we only want to do it if we
         // know the heading is there already
-        println!("Checking for heading: {heading} with key: {key}");
         if toml.as_table().contains_key(heading) {
             if let Item::Table(table) = &mut toml[heading] {
                 if table.contains_key(key) {
@@ -57,7 +92,7 @@ pub fn sort_toml(
                             sort_array(arr);
                         }
                         Item::Table(table) => {
-                            sort_table(table, group);
+                            sort_table(table, group, &None);
                         }
                         _ => {}
                     }
@@ -69,32 +104,34 @@ pub fn sort_toml(
     let mut first_table = None;
     let mut heading_order: BTreeMap<_, Vec<Heading>> = BTreeMap::new();
     for (idx, (head, item)) in toml.as_table_mut().iter_mut().enumerate() {
-        println!("Processing heading: {head} at index: {idx}");
+        // println!("Processing heading: {head} at index: {idx}");
 
-        // let mut target_table: Option<(&str, &Table)> = None;
-        let mut target_table: Option<String> = None;
-        if head.get() == "target" {
+        // let mut table_path: Option<(&str, &Table)> = None;
+        let mut table_path: Option<Vec<String>> = None;
+        let item_key = head.get();
+        if item_key == "target" {
             let mut special_tables = Vec::new();
-            let mut path = vec![head.get()];
+            let mut path = vec![item_key];
             if let Some(table) = item.as_table() {
-                special_tables.push((vec![head.get()], table));
+                special_tables.push((vec![item_key], table));
                 collect_special_tables(table, &mut path, &mut special_tables, &matcher);
             }
 
             if let Some((path, _table)) = special_tables.pop() {
-                println!("Found special table at path: {:?}", path);
+                // println!("Found special table at path: {:?}", path);
                 if let Some(key) = path.last() {
                     if matcher.heading.contains(key) {
-                        // target_table = Some((key, _table));
-                        target_table = Some(key.to_string());
+                        // table_path = Some((key, _table));
+                        table_path =
+                            Some(path.iter().map(|s| s.to_string()).collect::<_>());
                     }
                 }
             }
         }
 
-        println!("target_table: {:?}", target_table);
+        // println!("table_path: {:?}", table_path);
 
-        if !matcher.heading.contains(&head.get()) && target_table.is_none() {
+        if !matcher.heading.contains(&item_key) && table_path.is_none() {
             if !ordering.contains(&head.to_owned()) && !ordering.is_empty() {
                 ordering.push(head.to_owned());
             }
@@ -106,7 +143,14 @@ pub fn sort_toml(
                     // The root table is always index 0 which we ignore so add 1
                     first_table = Some(idx + 1);
                 }
-                let key = target_table.unwrap_or(head.to_string());
+                // generate key likes: `dependencies.cfg(target_os="linux").target`
+                let key = table_path
+                    .as_ref()
+                    .and_then(|t| {
+                        Some(t.iter().rev().cloned().collect::<Vec<_>>().join("."))
+                    })
+                    .unwrap_or_else(|| head.to_string());
+                // println!("Processing table: {key} at index: {idx}");
                 let headings = heading_order.entry((idx, key.clone())).or_default();
                 // Push a `Heading::Complete` here incase the tables are ordered
                 // [heading.segs]
@@ -116,7 +160,7 @@ pub fn sort_toml(
 
                 gather_headings(table, headings, 1);
                 headings.sort();
-                sort_table(table, group);
+                sort_table(table, group, &table_path);
             }
             Item::None => continue,
             _ => {}
@@ -173,11 +217,25 @@ fn sort_array(arr: &mut Array) {
     arr.set_trailing_comma(trailing_comma);
 }
 
-fn sort_table(table: &mut Table, group: bool) {
+fn sort_table(table: &mut Table, group: bool, table_path: &Option<Vec<String>>) {
     if group {
         sort_by_group(table);
+    } else if let Some(table_path) = table_path {
+        if table_path.len() > 1 {
+            sort_table_by_path(table, &table_path[1..]);
+        }
     } else {
         table.sort_values();
+    }
+}
+
+fn sort_table_by_path(table: &mut Table, path: &[String]) {
+    if path.is_empty() {
+        table.sort_values();
+    } else if let Some(sub) = table.get_mut(&path[0]) {
+        if let Item::Table(inner_table) = sub {
+            sort_table_by_path(inner_table, &path[1..]);
+        }
     }
 }
 
@@ -308,6 +366,8 @@ fn sort_by_ordering(
     toml: &mut DocumentMut,
 ) {
     let mut idx = 0;
+    println!("Ordering: {:?}", ordering);
+    println!("Heading order: {:?}", heading_order);
     for heading in ordering {
         if let Some((_, to_sort_headings)) =
             heading_order.iter().find(|((_, key), _)| key == heading)
